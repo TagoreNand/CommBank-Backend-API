@@ -1,0 +1,95 @@
+# CommBank full local stack:
+#   API + MongoDB (single-node replica set, required for multi-document transactions)
+#   + Prometheus (metrics) + Grafana (dashboards) + Jaeger (traces).
+#
+# Run:  docker compose up --build
+# Then: API http://localhost:8080/swagger | Grafana http://localhost:3000
+#       Prometheus http://localhost:9090   | Jaeger  http://localhost:16686
+
+name: commbank
+
+services:
+  mongo:
+    image: mongo:6
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # One-shot: initialise the replica set, then exit. The API waits for this to complete.
+  mongo-init:
+    image: mongo:6
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: "no"
+    entrypoint:
+      - bash
+      - -c
+      - >
+        mongosh --host mongo:27017 --quiet --eval '
+          try { rs.status(); print("replica set already initialised"); }
+          catch (e) { rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "mongo:27017" }] }); }'
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
+      jaeger:
+        condition: service_started
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__CommBank: "mongodb://mongo:27017/CommBank?replicaSet=rs0"
+      # Local-demo signing key ONLY — override in any real environment.
+      Jwt__SigningKey: "local-demo-only-signing-key-please-override-0123456789abcdef"
+      OpenTelemetry__OtlpEndpoint: "http://jaeger:4317"
+      Cors__AllowedOrigins__0: "http://localhost:3000"
+    ports:
+      - "8080:8080"
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC
+
+volumes:
+  mongo-data:
+  grafana-data:

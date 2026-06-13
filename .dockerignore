@@ -1,0 +1,21 @@
+# Build artifacts
+**/bin/
+**/obj/
+**/out/
+
+# IDE / VCS
+**/.vs/
+**/.vscode/
+**/.idea/
+**/.git/
+**/.github/
+
+# Secrets & local config (never bake into an image)
+**/Secrets.json
+**/*.user
+**/appsettings.*.Local.json
+**/.env
+
+# Misc
+**/node_modules/
+**/*.md
